@@ -28,18 +28,46 @@ router.post("/", async (req, res) => {
 
     if (!orders.length) return res.status(404).json({ error: "No orders found" });
     if (!routes.length) return res.status(404).json({ error: "No routes found" });
+    if (!driverDocs.length) return res.status(404).json({ error: "No drivers found" });
 
     // Map routes for quick lookup
     const routeMap = new Map(routes.map(r => [r.routeId, r]));
 
-    // ===== 3. ALLOCATE ORDERS =====
+    // ===== 3. ALLOCATE ORDERS WITH DRIVER HOURS TRACKING =====
     const driverCount = Math.min(drivers, driverDocs.length);
-    const assignedOrders = orders.map((order, idx) => ({
-      ...order.toObject(),
-      driverId: idx % driverCount
-    }));
+    const driverHours = driverDocs.map(d => d.currentShiftHours || 0); // track in hours
+    let assignedOrders = [];
+    let driverIndex = 0;
 
-    // ===== 4. CALCULATE KPIs =====
+    for (const order of orders) {
+      let assignedDriver = null;
+
+      // Find the next driver under maxHours
+      let attempts = 0;
+      while (attempts < driverCount) {
+        const candidate = driverIndex % driverCount;
+        if (driverHours[candidate] < maxHours) {
+          assignedDriver = candidate;
+          break;
+        }
+        driverIndex++;
+        attempts++;
+      }
+
+      if (assignedDriver === null) {
+        // All drivers have reached maxHours, stop assigning
+        break;
+      }
+
+      assignedOrders.push({
+        ...order.toObject(),
+        driverId: assignedDriver
+      });
+
+      driverIndex++;
+    }
+
+    // ===== 4. CALCULATE KPIs & UPDATE DRIVER HOURS =====
     let totalProfit = 0;
     let onTimeDeliveries = 0;
     let lateDeliveries = 0;
@@ -53,13 +81,12 @@ router.post("/", async (req, res) => {
       const baseTime = route.baseTimeMin;
       let deliveryTime = baseTime;
 
-      // Fatigue Rule
-      const driverData = driverDocs[order.driverId];
-      if (driverData && driverData.currentShiftHours > 8) {
+      // Fatigue penalty
+      if (driverHours[order.driverId] > 8) {
         deliveryTime *= 1.3;
       }
 
-      // Actual delivery time (simulate if not provided)
+      // If actual delivery timestamp exists
       if (order.deliveryTimestamp) {
         deliveryTime = Math.ceil((order.deliveryTimestamp - new Date(order.createdAt)) / 60000);
       }
@@ -67,7 +94,7 @@ router.post("/", async (req, res) => {
       let penalty = 0;
       let bonus = 0;
 
-      // Late Delivery Penalty
+      // Late penalty
       if (deliveryTime > baseTime + 10) {
         penalty += 50;
         lateDeliveries++;
@@ -75,25 +102,37 @@ router.post("/", async (req, res) => {
         onTimeDeliveries++;
       }
 
-      // High Value Bonus
+      // High value bonus
       if (order.valueRs > 1000 && deliveryTime <= baseTime + 10) {
         bonus += order.valueRs * 0.1;
       }
 
-      // Fuel Cost
+      // Fuel cost
       let fuelCost = route.distanceKm * 5;
       if (route.trafficLevel === "High") fuelCost += route.distanceKm * 2;
       if (fuelCosts[route.trafficLevel] !== undefined) {
         fuelCosts[route.trafficLevel] += fuelCost;
       }
 
-      // Profit
+      // Profit calculation
       const profit = order.valueRs + bonus - penalty - fuelCost;
       totalProfit += profit;
+
+      // Update driver's shift hours (minutes → hours)
+      driverHours[order.driverId] += deliveryTime / 60;
     }
 
+    // ===== 5. SAVE UPDATED DRIVER HOURS =====
+    for (let i = 0; i < driverCount; i++) {
+      driverDocs[i].currentShiftHours = driverHours[i];
+      await driverDocs[i].save();
+    }
+
+    // ===== 6. SUMMARY METRICS =====
     const efficiencyScore = Number(((onTimeDeliveries / orders.length) * 100).toFixed(2));
-    const avgOrderValue = Number((orders.reduce((sum, o) => sum + o.valueRs, 0) / orders.length).toFixed(2));
+    const avgOrderValue = Number(
+      (orders.reduce((sum, o) => sum + o.valueRs, 0) / orders.length).toFixed(2)
+    );
 
     res.json({
       totalProfit: Number(totalProfit.toFixed(2)),

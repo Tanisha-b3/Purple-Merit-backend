@@ -17,12 +17,13 @@ app.use(express.json())
 // import cors from 'cors';
 
 // Replace simple cors() with:
-app.use(cors({
-  origin: 'http://localhost:5173',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
+// app.use(cors({
+//   origin: 'http://localhost:5173',
+//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+//   allowedHeaders: ['Content-Type', 'Authorization'],
+//   credentials: true
+// }));
+app.use(cors())
 app.use('/api/drivers', driverRoutes)
 app.use('/routes', RouteRoutes)
 app.use('/orders', orderRoutes)
